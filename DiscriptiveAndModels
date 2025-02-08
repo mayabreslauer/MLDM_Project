@@ -1,0 +1,604 @@
+from sklearn.feature_selection import SelectFromModel
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from xgboost import XGBClassifier
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedShuffleSplit
+from sklearn.metrics import accuracy_score, f1_score
+from imblearn.over_sampling import SMOTE
+from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPClassifier
+from sklearn.feature_selection import RFE
+from sklearn.ensemble import RandomForestClassifier
+# Drop the first two columns
+dataset = pd.read_csv("processed_data.csv")
+dataset_new = dataset.iloc[:, 2:]
+# corr_matrix=dataset_new.corr()
+# sn.heatmap(corr_matrix, annot=True)
+# plt.show()
+target = dataset.iloc[:, 0]
+
+
+#desciptive statistics
+def descriptive_statistics(dataset_new):
+    for column in dataset_new.columns:
+        import pandas as pd
+        import matplotlib.pyplot as plt
+
+        dataset = pd.read_csv("processed_data.csv")
+
+        dataset_new = dataset.iloc[:, 2:]
+        target = dataset.iloc[:, 0]
+
+        sorted_levels = sorted(target.unique())
+
+        plt.hist(dataset_new[column], color='lightblue', histtype='bar', rwidth=0.8)
+        plt.xlabel(column)
+        plt.ylabel('Count')
+        plt.title(f'{column} distribution')
+        plt.show()
+
+        plt.figure()
+        data = [dataset_new[column][target == level] for level in sorted_levels]
+        plt.boxplot(data, labels=sorted_levels)
+        plt.xlabel('Stress Level')
+        plt.ylabel(column)
+        plt.title(f'{column} Boxplot grouped by Stress Level')
+        plt.show()
+
+        print(f'Descriptive statistics for {column}:')
+        print(dataset_new[column].describe())
+
+# descriptive_statistics(dataset_new)
+
+##preform XG-Boost 3 classes
+
+def XGBOOST_3Classes():
+
+    data = pd.read_csv('processed_data_agg.csv')
+    X = data.drop(columns=['Stress Level'])
+    y = data['Stress Level'] - 1  #Adjusting the labels to start from 0
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    smote = SMOTE(sampling_strategy='not majority', random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+
+    accuracies = []
+    num_features = list(range(1, 21))
+
+    for i in num_features:
+        selector = SelectFromModel(RandomForestClassifier(n_estimators=100, random_state=42), max_features=i)
+        selector.fit(X_train_sm, y_train_sm)
+        X_train_sm_selected = selector.transform(X_train_sm)
+
+        model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+        model.fit(X_train_sm_selected, y_train_sm)
+
+        X_test_selected = selector.transform(X_test)
+        y_pred = model.predict(X_test_selected)
+        accuracies.append(accuracy_score(y_test, y_pred))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(num_features, accuracies, marker='o')
+    plt.xlabel('Number of Features')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Number of Features')
+    plt.grid(True)
+    plt.xticks(num_features)
+    plt.show()
+
+    best_num_features = num_features[np.argmax(accuracies)]
+    selector = SelectFromModel(RandomForestClassifier(n_estimators=100, random_state=42), max_features=best_num_features)
+    selector.fit(X_train_sm, y_train_sm)
+    X_train_sm_selected = selector.transform(X_train_sm)
+
+    selected_features = selector.get_support(indices=True)
+    print("Selected features:", X.columns[selected_features])
+
+    param_grid = {
+        'n_estimators': [100, 200, 300, 400],
+        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+        'max_depth': [3, 4, 5, 6, 7],
+        'subsample': [0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.8, 0.9, 1.0]
+    }
+
+    grid_search = GridSearchCV(estimator=XGBClassifier(use_label_encoder=False, eval_metric='mlogloss'),
+                               param_grid=param_grid,
+                               cv=10,
+                               scoring='accuracy',
+                               n_jobs=-1,
+                               verbose=2)
+    grid_search.fit(X_train_sm_selected, y_train_sm)
+
+    best_params = grid_search.best_params_
+    print("Best parameters:", best_params)
+
+    final_model = XGBClassifier(**best_params, use_label_encoder=False, eval_metric='mlogloss')
+    sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+    cv_scores = []
+
+    for train_index, test_index in sss.split(X_train_sm_selected, y_train_sm):
+        X_train_cv, X_test_cv = X_train_sm_selected[train_index], X_train_sm_selected[test_index]
+        y_train_cv, y_test_cv = y_train_sm[train_index], y_train_sm[test_index]
+
+        final_model.fit(X_train_cv, y_train_cv)
+        y_pred_cv = final_model.predict(X_test_cv)
+        cv_scores.append(accuracy_score(y_test_cv, y_pred_cv))
+
+    print(f"Cross-Validation Scores: {cv_scores}")
+    print(f"Mean Cross-Validation Accuracy: {np.mean(cv_scores):.4f}")
+
+    final_model.fit(X_train_sm_selected, y_train_sm)
+
+    X_test_selected = selector.transform(X_test)
+    y_pred = final_model.predict(X_test_selected)
+
+    final_accuracy = accuracy_score(y_test, y_pred)
+    final_f1_score = f1_score(y_test, y_pred, average='macro')
+
+    print(f"Final Model Accuracy: {final_accuracy:.4f}")
+    print(f"Final Model F1 Score: {final_f1_score:.4f}")
+
+# XGBOOST_3Classes()
+
+##preform XG-Boost 2 classes
+def XGBOOST_2Classes():
+    data = pd.read_csv('processed_data_agg2.csv')
+    X = data.drop(columns=['Stress Level'])
+    y = data['Stress Level']  # Adjusting the labels to start from 0
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+    smote = SMOTE(sampling_strategy='not majority', random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+
+    accuracies = []
+    num_features = list(range(1, 21))
+
+    for i in num_features:
+        model = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+        selector = RFE(estimator=model, n_features_to_select=i, step=1)
+        selector.fit(X_train_sm, y_train_sm)
+        X_train_sm_selected = selector.transform(X_train_sm)
+
+        model.fit(X_train_sm_selected, y_train_sm)
+
+        X_test_selected = selector.transform(X_test)
+        y_pred = model.predict(X_test_selected)
+        accuracies.append(accuracy_score(y_test, y_pred))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(num_features, accuracies, marker='o')
+    plt.xlabel('Number of Features')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Number of Features - XG-Boost')
+    plt.grid(True)
+    plt.xticks(num_features)
+    plt.show()
+
+    best_num_features = num_features[np.argmax(accuracies)]
+    selector = RFE(estimator=XGBClassifier(use_label_encoder=False, eval_metric='mlogloss'), n_features_to_select=best_num_features, step=1)
+    selector.fit(X_train_sm, y_train_sm)
+    X_train_sm_selected = selector.transform(X_train_sm)
+
+    selected_features = selector.get_support(indices=True)
+    print("Selected features:", X.columns[selected_features])
+
+    param_grid = {
+        'n_estimators': [100, 200, 300, 400],
+        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+        'max_depth': [3, 4, 5, 6, 7],
+        'subsample': [0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.8, 0.9, 1.0]
+    }
+
+    grid_search = GridSearchCV(estimator=XGBClassifier(use_label_encoder=False, eval_metric='mlogloss'),
+                               param_grid=param_grid,
+                               cv=10,
+                               scoring='accuracy',
+                               n_jobs=-1,
+                               verbose=2)
+    grid_search.fit(X_train_sm_selected, y_train_sm)
+
+    best_params = grid_search.best_params_
+    print("Best parameters:", best_params)
+
+    final_model = XGBClassifier(**best_params, use_label_encoder=False, eval_metric='mlogloss')
+    sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+    cv_scores = []
+
+    for train_index, test_index in sss.split(X_train_sm_selected, y_train_sm):
+        X_train_cv, X_test_cv = X_train_sm_selected[train_index], X_train_sm_selected[test_index]
+        y_train_cv, y_test_cv = y_train_sm[train_index], y_train_sm[test_index]
+
+        final_model.fit(X_train_cv, y_train_cv)
+        y_pred_cv = final_model.predict(X_test_cv)
+        cv_scores.append(accuracy_score(y_test_cv, y_pred_cv))
+
+    print(f"Cross-Validation Scores: {cv_scores}")
+    print(f"Mean Cross-Validation Accuracy: {np.mean(cv_scores):.4f}")
+
+    final_model.fit(X_train_sm_selected, y_train_sm)
+
+    X_test_selected = selector.transform(X_test)
+    y_pred = final_model.predict(X_test_selected)
+
+    final_accuracy = accuracy_score(y_test, y_pred)
+    final_f1_score = f1_score(y_test, y_pred, average='macro')
+
+    print(f"Final Model Accuracy: {final_accuracy:.4f}")
+    print(f"Final Model F1 Score: {final_f1_score:.4f}")
+
+    cm_test = confusion_matrix(y_test, y_pred)
+    disp_test = ConfusionMatrixDisplay(confusion_matrix=cm_test)
+    disp_test.plot(cmap=plt.cm.Blues)
+    plt.title('Confusion Matrix - Test Set')
+    plt.show()
+
+# XGBOOST_2Classes()
+
+##preform neural network - 3 classes
+
+def NN_3Classes():
+    data = pd.read_csv('processed_data_agg2.csv')
+    X = data.drop(columns=['Stress Level'])
+    y = data['Stress Level'] - 1  # Adjusting the labels to start from 0
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+    smote = SMOTE(sampling_strategy='not majority', random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+
+    accuracies = []
+    num_features = list(range(1, 21))
+
+    for i in num_features:
+        selector = RFE(estimator=RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=i)
+        selector.fit(X_train_sm, y_train_sm)
+        X_train_sm_selected = selector.transform(X_train_sm)
+
+        model = MLPClassifier(random_state=42, max_iter=200)
+        model.fit(X_train_sm_selected, y_train_sm)
+
+        X_test_selected = selector.transform(X_test)
+        y_pred = model.predict(X_test_selected)
+        accuracies.append(accuracy_score(y_test, y_pred))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(num_features, accuracies, marker='o')
+    plt.xlabel('Number of Features')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Number of Features - Neural Network')
+    plt.grid(True)
+    plt.xticks(num_features)
+    plt.show()
+
+    best_num_features = num_features[np.argmax(accuracies)]
+    selector = RFE(estimator=RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=best_num_features)
+    selector.fit(X_train_sm, y_train_sm)
+    X_train_sm_selected = selector.transform(X_train_sm)
+
+    selected_features = selector.get_support(indices=True)
+    print("Selected features:", X.columns[selected_features])
+
+    param_grid = {
+        'hidden_layer_sizes': [(50,), (100,), (50, 50), (100, 50)],
+        'activation': ['tanh', 'relu'],
+        'solver': ['adam', 'sgd'],
+        'alpha': [0.0001, 0.001, 0.01],
+        'learning_rate': ['constant', 'adaptive']
+    }
+
+    grid_search = GridSearchCV(estimator=MLPClassifier(random_state=42, max_iter=200),
+                               param_grid=param_grid,
+                               cv=10,
+                               scoring='accuracy',
+                               n_jobs=-1,
+                               verbose=2)
+    grid_search.fit(X_train_sm_selected, y_train_sm)
+
+    best_params = grid_search.best_params_
+    print("Best parameters:", best_params)
+
+    final_model = MLPClassifier(**best_params, random_state=42, max_iter=200)
+    sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+    cv_scores = []
+
+    for train_index, test_index in sss.split(X_train_sm_selected, y_train_sm):
+        X_train_cv, X_test_cv = X_train_sm_selected[train_index], X_train_sm_selected[test_index]
+        y_train_cv, y_test_cv = y_train_sm[train_index], y_train_sm[test_index]
+
+        final_model.fit(X_train_cv, y_train_cv)
+        y_pred_cv = final_model.predict(X_test_cv)
+        cv_scores.append(accuracy_score(y_test_cv, y_pred_cv))
+
+    print(f"Cross-Validation Scores: {cv_scores}")
+    print(f"Mean Cross-Validation Accuracy: {np.mean(cv_scores):.4f}")
+
+    final_model.fit(X_train_sm_selected, y_train_sm)
+
+    X_test_selected = selector.transform(X_test)
+    y_pred = final_model.predict(X_test_selected)
+
+    final_accuracy = accuracy_score(y_test, y_pred)
+    final_f1_score = f1_score(y_test, y_pred, average='macro')
+
+    print(f"Final Model Accuracy: {final_accuracy:.4f}")
+    print(f"Final Model F1 Score: {final_f1_score:.4f}")
+
+# NN_3Classes()
+
+##preform neural network - 2 classes
+def NN_2Classes():
+    # Load your data
+    data = pd.read_csv('processed_data_agg_new.csv')
+    X = data.drop(columns=['Stress Level'])
+    y = data['Stress Level']   # Adjusting the labels to start from 0
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+    smote = SMOTE(sampling_strategy='not majority', random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+
+    accuracies = []
+    num_features = list(range(1, 21))
+
+    for i in num_features:
+        selector = RFE(estimator=RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=i)
+        selector.fit(X_train_sm, y_train_sm)
+        X_train_sm_selected = selector.transform(X_train_sm)
+
+        model = MLPClassifier(random_state=42, max_iter=200)
+        model.fit(X_train_sm_selected, y_train_sm)
+
+        X_test_selected = selector.transform(X_test)
+        y_pred = model.predict(X_test_selected)
+        accuracies.append(accuracy_score(y_test, y_pred))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(num_features, accuracies, marker='o')
+    plt.xlabel('Number of Features')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Number of Features - Neural Network')
+    plt.grid(True)
+    plt.xticks(num_features)
+    plt.show()
+
+    best_num_features = num_features[np.argmax(accuracies)]
+    selector = RFE(estimator=RandomForestClassifier(n_estimators=100, random_state=42), n_features_to_select=best_num_features)
+    selector.fit(X_train_sm, y_train_sm)
+    X_train_sm_selected = selector.transform(X_train_sm)
+
+    selected_features = selector.get_support(indices=True)
+    print("Selected features:", X.columns[selected_features])
+
+    param_grid = {
+        'hidden_layer_sizes': [(50,), (100,), (50, 50), (100, 50)],
+        'activation': ['tanh', 'relu'],
+        'solver': ['adam', 'sgd'],
+        'alpha': [0.0001, 0.001, 0.01],
+        'learning_rate': ['constant', 'adaptive']
+    }
+
+    grid_search = GridSearchCV(estimator=MLPClassifier(random_state=42, max_iter=200),
+                               param_grid=param_grid,
+                               cv=10,
+                               scoring='accuracy',
+                               n_jobs=-1,
+                               verbose=2)
+    grid_search.fit(X_train_sm_selected, y_train_sm)
+
+    best_params = grid_search.best_params_
+    print("Best parameters:", best_params)
+
+    final_model = MLPClassifier(**best_params, random_state=42, max_iter=200)
+    sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+    cv_scores = []
+
+    for train_index, test_index in sss.split(X_train_sm_selected, y_train_sm):
+        X_train_cv, X_test_cv = X_train_sm_selected[train_index], X_train_sm_selected[test_index]
+        y_train_cv, y_test_cv = y_train_sm[train_index], y_train_sm[test_index]
+
+        final_model.fit(X_train_cv, y_train_cv)
+        y_pred_cv = final_model.predict(X_test_cv)
+        cv_scores.append(accuracy_score(y_test_cv, y_pred_cv))
+
+    print(f"Cross-Validation Scores: {cv_scores}")
+    print(f"Mean Cross-Validation Accuracy: {np.mean(cv_scores):.4f}")
+
+    final_model.fit(X_train_sm_selected, y_train_sm)
+
+    X_test_selected = selector.transform(X_test)
+    y_pred = final_model.predict(X_test_selected)
+
+    final_accuracy = accuracy_score(y_test, y_pred)
+    final_f1_score = f1_score(y_test, y_pred, average='macro')
+
+    print(f"Final Model Accuracy: {final_accuracy:.4f}")
+    print(f"Final Model F1 Score: {final_f1_score:.4f}")
+
+# RF 2 classes
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.model_selection import StratifiedShuffleSplit, KFold, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.feature_selection import SelectFromModel
+from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
+import numpy as np
+
+
+
+data = pd.read_csv('processed_data_agg2.csv')
+X = data.drop(columns=['Stress Level'])
+y = data['Stress Level']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train_resampled, y_train_resampled = SMOTE(sampling_strategy='not majority').fit_resample(X_train, y_train)
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+
+num_features_list = range(1, 25)
+accuracies_rf = []
+best_features_rf = None
+best_accuracy_rf = 0.0
+
+# Initialize StratifiedShuffleSplit for training/validation split
+sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+
+# Iterate over different number of features
+for num_features in num_features_list:
+    # Perform feature selection using Random Forest within StratifiedShuffleSplit
+    avg_accuracy_rf = 0.0
+    for train_index, val_index in sss.split(X_train_resampled, y_train_resampled):
+        X_train_fold, X_val_fold = X_train_resampled.iloc[train_index], X_train_resampled.iloc[val_index]
+        y_train_fold, y_val_fold = y_train_resampled.iloc[train_index], y_train_resampled.iloc[val_index]
+
+        selector = SelectFromModel(rf, max_features=num_features, threshold=-np.inf)
+        selector.fit(X_train_fold, y_train_fold.values.ravel())  # Convert y_train_fold to 1D array
+        selected_features = X_train_resampled.columns[selector.get_support()]
+        X_train_selected = selector.transform(X_train_fold)
+        X_val_selected = selector.transform(X_val_fold)
+
+        # Train RandomForestClassifier
+        rf.fit(X_train_selected, y_train_fold.values.ravel())
+
+        # Evaluate on validation set
+        y_pred_val = rf.predict(X_val_selected)
+        accuracy_val = accuracy_score(y_val_fold, y_pred_val)
+        avg_accuracy_rf += accuracy_val / sss.n_splits
+
+    accuracies_rf.append(avg_accuracy_rf)
+
+    # Track the best feature set
+    if avg_accuracy_rf > best_accuracy_rf:
+        best_accuracy_rf = avg_accuracy_rf
+        best_features_rf = selected_features
+
+# Print the best feature set
+print(f"Best features selected by Random Forest: {best_features_rf}")
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.plot(num_features_list, accuracies_rf, marker='o', linestyle='-', color='b', label='Random Forest')
+plt.title('Accuracy vs. Number of Features (Random Forest)')
+plt.xlabel('Number of Features')
+plt.ylabel('Accuracy')
+plt.xticks(num_features_list)
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# KNN 2 classes
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.model_selection import StratifiedShuffleSplit, KFold, GridSearchCV, train_test_split
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.neighbors import KNeighborsClassifier
+import numpy as np
+from sklearn.feature_selection import SelectKBest, f_classif
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Load data
+data = pd.read_csv('processed_data_agg2.csv')
+X = data.drop(columns=['Stress Level'])
+y = data['Stress Level']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train_resampled = pd.read_csv('X_train_2.csv')
+y_train_resampled = pd.read_csv('y_train_2.csv')
+
+# Initialize lists to store results
+num_features_list = range(1, 25)
+accuracies_knn = []
+best_features_knn = None
+best_accuracy_knn = 0.0
+
+# Initialize StratifiedShuffleSplit for training/validation split
+sss = StratifiedShuffleSplit(n_splits=10, test_size=0.2, random_state=42)
+
+for num_features in num_features_list:
+    # Perform feature selection using SelectKBest and f_classif
+    selector = SelectKBest(score_func=f_classif, k=num_features)
+    X_train_selected = selector.fit_transform(X_train_resampled, y_train_resampled.values.ravel())
+    selected_features = X_train_resampled.columns[selector.get_support()]
+
+    # Train KNeighborsClassifier
+    knn = KNeighborsClassifier()
+    knn.fit(X_train_selected, y_train_resampled.values.ravel())
+
+    # Evaluate on training set
+    accuracy_train = knn.score(X_train_selected, y_train_resampled)
+
+    # Track the best feature set
+    if accuracy_train > best_accuracy_knn or (accuracy_train == best_accuracy_knn and len(selected_features) < len(best_features_knn)):
+        best_accuracy_knn = accuracy_train
+        best_features_knn = selected_features
+
+    accuracies_knn.append(accuracy_train)
+
+# Print the best feature set
+print(f"Best features selected: {best_features_knn}")
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.plot(num_features_list, accuracies_knn, marker='o', linestyle='-', color='b', label='KNN')
+plt.title('Accuracy vs. Number of Features (KNN)')
+plt.xlabel('Number of Features')
+plt.ylabel('Accuracy')
+plt.xticks(num_features_list)
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Convert X_train_resampled to selected features
+X_train_best = X_train_resampled.loc[:, best_features_knn]
+
+# Define parameter grid for grid search
+param_grid = {
+    'n_neighbors': [3, 5, 7, 9],
+    'weights': ['uniform', 'distance'],
+    'metric': ['euclidean', 'manhattan']
+}
+
+# Perform Grid Search CV with KFold cross-validation
+kf = KFold(n_splits=10, shuffle=True, random_state=42)
+grid_search = GridSearchCV(estimator=KNeighborsClassifier(), param_grid=param_grid, cv=kf, scoring='accuracy', n_jobs=1, verbose=0)
+grid_search.fit(X_train_best, y_train_resampled.values.ravel())
+
+# Print best parameters and best score
+print("Best Parameters found by Grid Search:")
+print(grid_search.best_params_)
+print("Best Cross-Validation Accuracy Score:")
+print(grid_search.best_score_)
+
+# Convert X_test to selected features
+X_test_best = X_test.loc[:, best_features_knn]
+y_pred = grid_search.best_estimator_.predict(X_test_best)
+test_accuracy = accuracy_score(y_test, y_pred)
+test_f1 = f1_score(y_test, y_pred, average='weighted')
+test_cm = confusion_matrix(y_test, y_pred)
+
+print("Test Set Performance:")
+print(f"Accuracy: {test_accuracy:.4f}")
+print(f"F1 Score: {test_f1:.4f}")
+print("Confusion Matrix:")
+print(test_cm)
+
+# for three classes import the correct file processed_data_agg2
